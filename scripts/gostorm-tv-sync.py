@@ -44,8 +44,8 @@ def _load_gostream_config() -> dict:
     except Exception:
         cfg = {}
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    cfg['_state_dir'] = os.environ.get('GOSTREAM_STATE_DIR', os.path.join(config_dir, 'STATE'))
-    cfg['_log_dir'] = os.environ.get('GOSTREAM_LOG_DIR', os.path.join(config_dir, 'logs'))
+    cfg['_state_dir'] = default_state_dir(config_dir)
+    cfg['_log_dir'] = default_logs_dir(config_dir)
     plex_cfg = cfg.setdefault('plex', {})
     plex_cfg['url'] = os.environ.get('GOSTREAM_PLEX_URL') or os.environ.get('PLEX_URL') or plex_cfg.get('url', '')
     plex_cfg['token'] = os.environ.get('GOSTREAM_PLEX_TOKEN') or os.environ.get('PLEX_TOKEN') or plex_cfg.get('token', '')
@@ -82,6 +82,7 @@ def _signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
 from urllib.parse import quote
+from windows_compat import default_library_dir, default_logs_dir, default_mount_path, default_state_dir, lock_file, unlock_file
 from prowlarr_client import ProwlarrClient
 
 
@@ -100,10 +101,10 @@ class GoStormTV:
     def __init__(self):
         # ===== CONFIGURATION (read from config.json, env overrides supported) =====
         self.TORRSERVER_URL = os.getenv("TORRSERVER_URL", _cfg.get('gostorm_url', 'http://127.0.0.1:8090'))
-        _mount = _cfg.get('physical_source_path', '/mnt/torrserver')
+        _mount = _cfg.get('physical_source_path', default_library_dir())
         self.TV_DIR = os.getenv("TV_DIR", os.path.join(_mount, "tv"))
-        self.STATE_DIR = os.getenv("STATE_DIR", _cfg.get('_state_dir', '/home/pi/STATE'))
-        self.LOG_FILE = os.getenv("LOG_FILE", os.path.join(_cfg.get('_log_dir', '/home/pi/logs'), 'gostorm-tv-sync.log'))
+        self.STATE_DIR = os.getenv("STATE_DIR", _cfg.get('_state_dir', default_state_dir(os.path.dirname(os.path.abspath(__file__)))))
+        self.LOG_FILE = os.getenv("LOG_FILE", os.path.join(_cfg.get('_log_dir', default_logs_dir(os.path.dirname(os.path.abspath(__file__)))), 'gostorm-tv-sync.log'))
 
         # API Keys
         self.TMDB_API_KEY = _cfg.get('tmdb_api_key', '')
@@ -239,8 +240,7 @@ class GoStormTV:
 
     def _save_registry(self):
         """Save episode registry atomically with file lock to prevent corruption"""
-        import fcntl
-        lock_file = self.REGISTRY_FILE + '.lock'
+        registry_lock_path = self.REGISTRY_FILE + '.lock'
         # Use PID in temp filename to avoid race conditions between processes
         tmp = f"{self.REGISTRY_FILE}.{os.getpid()}.tmp"
 
@@ -249,8 +249,8 @@ class GoStormTV:
             os.makedirs(os.path.dirname(self.REGISTRY_FILE), exist_ok=True)
 
             # Acquire lock FIRST to prevent concurrent writes
-            with open(lock_file, 'w') as lf:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            with open(registry_lock_path, 'a+', encoding='utf-8') as lf:
+                lock_file(lf)
                 try:
                     # Write to temp file while holding lock
                     with open(tmp, 'w') as f:
@@ -261,7 +261,7 @@ class GoStormTV:
                     # Atomic replace
                     os.replace(tmp, self.REGISTRY_FILE)
                 finally:
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+                    unlock_file(lf)
                     # Cleanup temp file if it still exists
                     if os.path.exists(tmp):
                         try:
@@ -1513,70 +1513,60 @@ class GoStormTV:
     # ===== INSTANCE MANAGEMENT =====
 
     def _kill_existing_instances(self):
-        """
-        Ensure single instance using atomic file locking (fcntl.flock).
-        This is the standard Unix approach - no race conditions possible.
-        """
-        import fcntl
+        """Ensure single instance using a cross-platform lock file."""
         import atexit
 
-        lock_file = "/tmp/gostorm-tv-sync.lock"
-        pid_file = "/tmp/gostorm-tv-sync.pid"
+        lock_dir = Path(self.STATE_DIR)
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / 'gostorm-tv-sync.lock'
+        pid_path = lock_dir / 'gostorm-tv-sync.pid'
 
-        # Open lock file (create if not exists)
         try:
-            self._lock_fd = open(lock_file, 'w')
+            self._lock_fd = open(lock_path, 'a+', encoding='utf-8')
         except IOError as e:
             self.log("ERROR", f"Cannot create lock file: {e}")
             sys.exit(1)
 
-        # Try to acquire EXCLUSIVE lock (non-blocking)
         try:
-            fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
-            # Lock held by another process - check if it's alive
+            lock_file(self._lock_fd, blocking=False)
+        except OSError:
             try:
-                with open(pid_file, 'r') as f:
-                    old_pid = int(f.read().strip())
-                os.kill(old_pid, 0)  # Check if process exists
-                self.log("ERROR", f"Another instance already running (PID {old_pid}). Exiting.")
-                self._lock_fd.close()
-                sys.exit(1)
-            except (ProcessLookupError, ValueError, FileNotFoundError, PermissionError):
-                # Stale lock - old process crashed
+                old_pid = int(pid_path.read_text(encoding='utf-8').strip())
+                if old_pid > 0:
+                    self.log("ERROR", f"Another instance already running (PID {old_pid}). Exiting.")
+                    self._lock_fd.close()
+                    sys.exit(1)
+            except Exception:
                 self.log("WARN", "Stale lock detected, forcing acquisition...")
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX)
+                lock_file(self._lock_fd, blocking=True)
 
-        # Write our PID
         try:
-            with open(pid_file, 'w') as f:
-                f.write(str(os.getpid()))
+            pid_path.write_text(str(os.getpid()), encoding='utf-8')
         except IOError:
             pass
 
+        self._lock_file_path = str(lock_path)
+        self._pid_file_path = str(pid_path)
         self.log("INFO", f"Lock acquired, running as PID {os.getpid()}")
         atexit.register(self._release_lock)
 
     def _release_lock(self):
         """Release lock file on exit."""
-        import fcntl
-
-        lock_file = "/tmp/gostorm-tv-sync.lock"
-        pid_file = "/tmp/gostorm-tv-sync.pid"
-
         try:
             if hasattr(self, '_lock_fd') and self._lock_fd:
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_UN)
+                unlock_file(self._lock_fd)
                 self._lock_fd.close()
                 self._lock_fd = None
-        except:
+        except Exception:
             pass
 
-        try:
-            os.remove(pid_file)
-            os.remove(lock_file)
-        except:
-            pass
+        for f in [getattr(self, '_pid_file_path', None), getattr(self, '_lock_file_path', None)]:
+            if not f:
+                continue
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     # ===== MAIN EXECUTION =====
 

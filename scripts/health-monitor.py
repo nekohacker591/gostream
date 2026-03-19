@@ -16,6 +16,7 @@ import os
 import re
 import socket
 import subprocess
+from windows_compat import default_library_dir, default_logs_dir, default_mount_path, default_state_dir, lock_file, restart_local_service, tail_file, unlock_file
 import threading
 import time
 from collections import deque
@@ -43,8 +44,8 @@ def _load_gostream_config() -> dict:
     except Exception:
         cfg = {}
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    cfg['_state_dir'] = os.environ.get('GOSTREAM_STATE_DIR', os.path.join(config_dir, 'STATE'))
-    cfg['_log_dir'] = os.environ.get('GOSTREAM_LOG_DIR', os.path.join(config_dir, 'logs'))
+    cfg['_state_dir'] = default_state_dir(config_dir)
+    cfg['_log_dir'] = default_logs_dir(config_dir)
     plex_cfg = cfg.setdefault('plex', {})
     plex_cfg['url'] = os.environ.get('GOSTREAM_PLEX_URL') or os.environ.get('PLEX_URL') or plex_cfg.get('url', '')
     plex_cfg['token'] = os.environ.get('GOSTREAM_PLEX_TOKEN') or os.environ.get('PLEX_TOKEN') or plex_cfg.get('token', '')
@@ -82,11 +83,11 @@ def plex_get(url: str, **kwargs):
     kwargs.setdefault('verify', not PLEX_INSECURE_TLS)
     return requests.get(url, **kwargs)
 
-FUSE_MOUNT = _cfg.get('fuse_mount_path', '/mnt/torrserver-go')
-MOVIES_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'movies')
-TV_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'tv')
-LOGS_DIR = _cfg.get('_log_dir', '/home/pi/logs')
-STATE_DIR = _cfg.get('_state_dir', '/home/pi/STATE')
+FUSE_MOUNT = _cfg.get('fuse_mount_path', default_mount_path())
+MOVIES_DIR = os.path.join(_cfg.get('physical_source_path', default_library_dir()), 'movies')
+TV_DIR = os.path.join(_cfg.get('physical_source_path', default_library_dir()), 'tv')
+LOGS_DIR = _cfg.get('_log_dir', default_logs_dir(os.path.dirname(os.path.abspath(__file__))))
+STATE_DIR = _cfg.get('_state_dir', default_state_dir(os.path.dirname(os.path.abspath(__file__))))
 SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-sync-complete.py')
 SYNC_LOG = os.path.join(LOGS_DIR, 'gostorm-debug.log')
 TV_SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-tv-sync.py')
@@ -702,7 +703,7 @@ def check_gostorm() -> None:
             if gostorm_fail_count >= GOSTORM_MAX_FAILURES:
                 logger.error(f"GoStorm persistent failure detected ({GOSTORM_MAX_FAILURES} attempts @ {GOSTORM_HEALTH_INTERVAL}s). Auto-restarting...")
                 try:
-                    subprocess.run(["sudo", "systemctl", "restart", "gostream"], timeout=10)
+                    restart_local_service("gostream")
                     gostorm_fail_count = 0
                     last_restart["gostorm"] = time.time()
                 except Exception as re:
@@ -1700,7 +1701,7 @@ async def api_logs(
             return JSONResponse({"lines": [], "error": "Log file not found"})
 
         # Efficient tail using subprocess (V303 optimization)
-        result = subprocess.run(["tail", "-n", str(lines), log_path], capture_output=True, text=True, errors="ignore")
+        result = tail_file(log_path, lines)
         log_content = result.stdout
 
         parsed_lines = []
@@ -1778,10 +1779,7 @@ async def api_restart(service: str) -> JSONResponse:
                 capture_output=True, text=True, timeout=120
             )
         else:
-            result = subprocess.run(
-                ["sudo", "systemctl", "restart", services[service]],
-                capture_output=True, text=True, timeout=30
-            )
+            result = restart_local_service(services[service])
 
         if result.returncode == 0:
             last_restart[service] = now
