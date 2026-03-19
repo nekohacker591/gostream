@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import socket
+import platform
 import subprocess
 import threading
 import time
@@ -82,11 +83,12 @@ def plex_get(url: str, **kwargs):
     kwargs.setdefault('verify', not PLEX_INSECURE_TLS)
     return requests.get(url, **kwargs)
 
-FUSE_MOUNT = _cfg.get('fuse_mount_path', '/mnt/torrserver-go')
-MOVIES_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'movies')
-TV_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'tv')
-LOGS_DIR = _cfg.get('_log_dir', '/home/pi/logs')
-STATE_DIR = _cfg.get('_state_dir', '/home/pi/STATE')
+DEFAULT_ROOT = Path.home() / 'GoStream'
+FUSE_MOUNT = _cfg.get('fuse_mount_path', str(DEFAULT_ROOT / 'mount'))
+MOVIES_DIR = os.path.join(_cfg.get('physical_source_path', str(DEFAULT_ROOT / 'library')), 'movies')
+TV_DIR = os.path.join(_cfg.get('physical_source_path', str(DEFAULT_ROOT / 'library')), 'tv')
+LOGS_DIR = _cfg.get('_log_dir', str(DEFAULT_ROOT / 'logs'))
+STATE_DIR = _cfg.get('_state_dir', str(DEFAULT_ROOT / 'STATE'))
 SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-sync-complete.py')
 SYNC_LOG = os.path.join(LOGS_DIR, 'gostorm-debug.log')
 TV_SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-tv-sync.py')
@@ -116,6 +118,20 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+IS_WINDOWS = platform.system().lower() == "windows"
+
+def restart_local_service(service_name: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    if IS_WINDOWS:
+        return subprocess.run(["powershell", "-NoProfile", "-Command", f"Restart-Service -Name '{service_name}' -Force"], capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["sudo", "systemctl", "restart", service_name], capture_output=True, text=True, timeout=timeout)
+
+
+def restart_fuse_service() -> subprocess.CompletedProcess:
+    if IS_WINDOWS:
+        return restart_local_service("gostream", timeout=120)
+    return subprocess.run(["sudo", "/home/pi/scripts/fuse-watchdog-improved.sh", "restart"], capture_output=True, text=True, timeout=120)
 
 # =============================================================================
 # Global State
@@ -1767,21 +1783,18 @@ async def api_restart(service: str) -> JSONResponse:
         if service == "plex":
             from urllib.parse import urlparse as _urlparse
             _plex_host = _urlparse(PLEX_URL).hostname or "127.0.0.1"
-            result = subprocess.run(
-                ["ssh", f"pi@{_plex_host}", "sudo", "systemctl", "restart", services[service]],
-                capture_output=True, text=True, timeout=30
-            )
+            if IS_WINDOWS:
+                result = subprocess.run(["powershell", "-NoProfile", "-Command", f"Restart-Service -Name '{services[service]}' -Force"], capture_output=True, text=True, timeout=30)
+            else:
+                result = subprocess.run(
+                    ["ssh", f"pi@{_plex_host}", "sudo", "systemctl", "restart", services[service]],
+                    capture_output=True, text=True, timeout=30
+                )
         elif service == "fuse":
             # Use improved watchdog script for clean FUSE restart (unmounts correctly)
-            result = subprocess.run(
-                ["sudo", "/home/pi/scripts/fuse-watchdog-improved.sh", "restart"],
-                capture_output=True, text=True, timeout=120
-            )
+            result = restart_fuse_service()
         else:
-            result = subprocess.run(
-                ["sudo", "systemctl", "restart", services[service]],
-                capture_output=True, text=True, timeout=30
-            )
+            result = restart_local_service(services[service])
 
         if result.returncode == 0:
             last_restart[service] = now
