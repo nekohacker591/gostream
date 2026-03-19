@@ -340,49 +340,88 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 
 ## Requirements
 
+### Windows port requirements
+
 | Component | Details |
 |-----------|---------|
-| **Hardware** | Raspberry Pi 4 with arm64 OS (4 GB RAM recommended) |
-| **Go** | 1.24+ — must be `linux/arm64` toolchain, **not** `linux/arm` (32-bit) |
-| **Python** | 3.9+ with pip3 |
-| **FUSE 3** | `sudo apt install fuse3 libfuse3-dev` |
-| **systemd** | For service management |
-| **Samba** | `sudo apt install samba` |
-| **Plex/Jellyfin** | Media Server (on Synology or any network host) |
+| **OS** | Windows 11 or Windows Server 2022 (64-bit) |
+| **Filesystem layer** | [WinFSP](https://winfsp.dev/) installed system-wide for the Windows virtual drive layer |
+| **Go** | 1.24+ (`windows/amd64`) with CGO enabled |
+| **Python** | 3.9+ with `pip` available from `py` or `python` |
+| **PowerShell** | PowerShell 5.1+ or PowerShell 7+ |
+| **Git** | Needed to clone and update the repository |
+| **Plex/Jellyfin** | Optional but recommended for library scanning and webhook automation |
 | **TMDB API key** | Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
 | **Plex token** | Settings → Account → XML API |
+
+### Windows architecture notes
+
+This repository now includes a **Windows-oriented operations layer**:
+
+- PowerShell installer and bootstrap scripts (`install.ps1`, `ai/setup_windows.ps1`, `docker/docker-entrypoint.ps1`).
+- Windows-aware state/log path defaults under `%LOCALAPPDATA%\GoStream` or the configured install root.
+- Windows file-locking for registry persistence.
+- Windows NAT-PMP support that updates the GoStorm listen port and configures `netsh interface portproxy` / firewall rules instead of Linux `iptables`.
+- Health-monitor restart actions routed through `Restart-Service` / PowerShell remoting on Windows instead of `systemctl` / shell scripts.
+
+> [!IMPORTANT]
+> The original Linux deployment path is still documented in git history, but the main setup instructions below now describe the Windows port.
 
 ---
 
 ## Quick Install
 
-```bash
+```powershell
 git clone https://github.com/MrRobotoGit/gostream gostream
 cd gostream
-chmod +x install.sh
-./install.sh
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
 ```
 
-![GoStream interactive installer](docs/screenshots/install.png)
+The Windows installer performs the platform-specific bootstrap:
 
-The interactive installer handles everything end-to-end:
-1. Installs system dependencies (`fuse3`, `libfuse3-dev`, `gcc`, `samba`, `git`, `pip3`)
-2. Prompts for all required paths, Plex credentials, TMDB key, and NAT-PMP settings
-3. Generates `config.json` from `config.json.example`
-4. Installs Python dependencies from `requirements.txt`
-5. Creates `GoStream/STATE/`, `logs/`, and FUSE mount point directories
-6. **Compiles the GoStream binary** (downloads Go if needed, detects architecture automatically)
-7. Writes and enables systemd services for `gostream` and `health-monitor`
-8. Optionally configures system cron jobs (skip if using the built-in Scheduler)
+1. Creates the install root, `STATE`, and `logs` directories.
+2. Validates Git, Go, Python, and PowerShell availability.
+3. Installs **WinFSP** through `winget` when available.
+4. Installs Python requirements from `requirements.txt`.
+5. Generates a Windows `config.json` with NTFS paths and colocated state/log directories.
+6. Builds `gostream.exe` for `windows/amd64`.
+7. Writes a PowerShell launch script you can wire into **NSSM**, **WinSW**, or Task Scheduler.
 
-Once complete:
+### Recommended Windows layout
 
-```bash
-sudo systemctl start gostream health-monitor
+| Purpose | Example |
+|---------|---------|
+| Install root | `C:\Users\<you>\AppData\Local\GoStream` |
+| Real library source | `D:\GoStream\library-real` |
+| Virtual drive / mount target | `R:\` |
+| State directory | `C:\Users\<you>\AppData\Local\GoStream\STATE` |
+| Log directory | `C:\Users\<you>\AppData\Local\GoStream\logs` |
+
+### Service registration on Windows
+
+After `install.ps1` finishes, register the generated `Start-GoStream.ps1` wrapper with one of these approaches:
+
+```powershell
+# NSSM example
+nssm install GoStream powershell.exe
+nssm set GoStream AppParameters "-ExecutionPolicy Bypass -File C:\Users\<you>\AppData\Local\GoStream\Start-GoStream.ps1"
+nssm start GoStream
 ```
+
+```powershell
+# Health monitor (optional, second service)
+powershell -ExecutionPolicy Bypass -File .\scripts\health-monitor.py
+```
+
+### First-run checklist
+
+- Confirm `config.json` contains Windows paths (`D:\...`, `R:\...`, etc.).
+- Make sure the service account can access the source library path and write to the install root.
+- If NAT-PMP is enabled, run the service elevated so `netsh interface portproxy` and firewall rules can be created.
+- Configure Plex/Jellyfin webhooks to point to `http://<windows-host>:8096/plex/webhook`.
 
 ---
-
 ## How-To Guide
 
 > [!CAUTION]
@@ -829,31 +868,26 @@ Options: serverino,vers=3.0,uid=1024,gid=100,file_mode=0777,dir_mode=0777
 > [!IMPORTANT]
 > Compile natively on Pi 4 (arm64). Do not cross-compile — the PGO profile must match the target architecture.
 
-```bash
-ssh pi@192.168.1.2
-cd /home/pi/gostream
+```powershell
+go clean -cache
+go mod tidy
+$env:CGO_ENABLED = "1"
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+go build -o C:\GoStream\gostream.exe .
 
-/usr/local/go/bin/go clean -cache
-/usr/local/go/bin/go mod tidy
-GOARCH=arm64 CGO_ENABLED=1 /usr/local/go/bin/go build -pgo=auto -o gostream .
-
-# Deploy
-sudo systemctl stop gostream
-cp gostream /home/pi/GoStream/gostream
-sudo systemctl start gostream
+Restart-Service GoStream
 ```
 
 **Verify the toolchain is 64-bit:**
-```bash
-/usr/local/go/bin/go version
-# Required: go version go1.24.x linux/arm64
-# Wrong:    go version go1.24.x linux/arm   <-- 32-bit
+```powershell
+go version
+# Required: go version go1.24.x windows/amd64
 ```
 
 **Install Go 1.24 if needed:**
-```bash
-wget https://go.dev/dl/go1.24.0.linux-arm64.tar.gz
-sudo tar -C /usr/local -xzf go1.24.0.linux-arm64.tar.gz
+```powershell
+winget install GoLang.Go
 ```
 
 ---

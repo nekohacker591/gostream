@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"gostream/ai"
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
 	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
-	"github.com/cespare/xxhash/v2"
 	"io"
 	"log"
 	"net"
@@ -1894,7 +1894,7 @@ DATA_READY:
 							return // Already cached
 						}
 
-										// BUG-3: prefetch outlives the FUSE call â use independent context
+						// BUG-3: prefetch outlives the FUSE call â use independent context
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
 						if err := globalRateLimiter.Acquire(ctx); err != nil {
@@ -3010,8 +3010,8 @@ func main() {
 			globalConfig.RootPath = filepath.Dir(dbPath)
 		}
 	} else {
-		// Default to /home/pi if no flag provided (for backward compat)
-		globalConfig.RootPath = "/home/pi"
+		// Default to an OS-appropriate root if no flag provided
+		globalConfig.RootPath = defaultRootPath()
 	}
 
 	// CLI args take precedence; fall back to config.json values if omitted
@@ -3428,10 +3428,11 @@ func main() {
 // When smbd enters D-state, the Synology CIFS mount becomes unresponsive and can't
 // be remounted until gostream restarts (only way to unblock kernel FUSE operations).
 // Strategy: Level 1 (3 hits, 180s) - Emergency Unblock (Interrupt all pumps).
-//           Level 2 (10 hits, 600s) - Graceful Restart (Last resort).
+//
+//	Level 2 (10 hits, 600s) - Graceful Restart (Last resort).
 func smbdWatchdog() {
 	const checkInterval = 60 * time.Second
-	const unblockThreshold = 3 // 180s - Emergency unblock (interrupt all pumps)
+	const unblockThreshold = 3  // 180s - Emergency unblock (interrupt all pumps)
 	const restartThreshold = 10 // 600s - Full restart (persistent stall)
 	consecutiveHits := 0
 

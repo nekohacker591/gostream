@@ -77,7 +77,7 @@ class GoStormSync:
         self.MOVIES_DIR = os.path.join(self.MOUNT_DIR, "movies")
         self.TV_DIR = os.path.join(self.MOUNT_DIR, "tv")
         # Persistent cache for processed TV fullpacks to ensure idempotence across runs
-        self.STATE_DIR = _cfg.get('_state_dir', '/home/pi/STATE')
+        self.STATE_DIR = _cfg.get('_state_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'STATE'))
         self.FULLPACK_CACHE_FILE = os.path.join(self.STATE_DIR, "tv_fullpacks.json")
         # TV library persistence cache to prevent systematic deletion
         self.TV_LIBRARY_CACHE_FILE = os.path.join(self.STATE_DIR, "tv_series_library.json")
@@ -124,7 +124,7 @@ class GoStormSync:
         self._prune_movie_no_streams_cache()
         self._prune_movie_recheck_cache()
         self._prune_movie_add_fail_cache()
-        self.LOG_FILE = os.path.join(_cfg.get('_log_dir', '/home/pi/logs'), 'gostorm-debug.log')
+        self.LOG_FILE = os.path.join(_cfg.get('_log_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')), 'gostorm-debug.log')
         # TMDB / Torrentio
         self.TMDB_API_KEY = _cfg.get('tmdb_api_key', '')
         self.TMDB_BASE_URL = "https://api.themoviedb.org/3"

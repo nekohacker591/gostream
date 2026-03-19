@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -145,10 +144,10 @@ func saveRegistryLocked(path string, registry map[string]EpisodeEntry) error {
 	defer f.Close()
 
 	// 2. Lock file (Exclusive, blocking) - Matches Python's fcntl.flock(f, fcntl.LOCK_EX)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(f.Fd()); err != nil {
 		return fmt.Errorf("could not acquire lock: %v", err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer unlockFile(f.Fd())
 
 	// 3. Encode JSON
 	data, err := json.MarshalIndent(registry, "", "  ")
