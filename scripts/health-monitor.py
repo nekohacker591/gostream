@@ -85,8 +85,8 @@ def plex_get(url: str, **kwargs):
 FUSE_MOUNT = _cfg.get('fuse_mount_path', '/mnt/torrserver-go')
 MOVIES_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'movies')
 TV_DIR = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'tv')
-LOGS_DIR = _cfg.get('_log_dir', '/home/pi/logs')
-STATE_DIR = _cfg.get('_state_dir', '/home/pi/STATE')
+LOGS_DIR = _cfg.get('_log_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs'))
+STATE_DIR = _cfg.get('_state_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'STATE'))
 SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-sync-complete.py')
 SYNC_LOG = os.path.join(LOGS_DIR, 'gostorm-debug.log')
 TV_SYNC_SCRIPT = os.path.join(_scripts_dir, 'gostorm-tv-sync.py')
@@ -116,6 +116,25 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def _run_service_restart(service_name: str, timeout: int = 30):
+    if os.name == "nt":
+        return subprocess.run([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", f"Restart-Service -Name '{service_name}' -Force"
+        ], capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["sudo", "systemctl", "restart", service_name], capture_output=True, text=True, timeout=timeout)
+
+
+def _run_remote_plex_restart(hostname: str, service_name: str, timeout: int = 30):
+    if os.name == "nt":
+        return subprocess.run([
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command",
+            f"Invoke-Command -ComputerName '{hostname}' -ScriptBlock {{ Restart-Service -Name '{service_name}' -Force }}"
+        ], capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["ssh", f"pi@{hostname}", "sudo", "systemctl", "restart", service_name], capture_output=True, text=True, timeout=timeout)
 
 # =============================================================================
 # Global State
@@ -702,7 +721,7 @@ def check_gostorm() -> None:
             if gostorm_fail_count >= GOSTORM_MAX_FAILURES:
                 logger.error(f"GoStorm persistent failure detected ({GOSTORM_MAX_FAILURES} attempts @ {GOSTORM_HEALTH_INTERVAL}s). Auto-restarting...")
                 try:
-                    subprocess.run(["sudo", "systemctl", "restart", "gostream"], timeout=10)
+                    _run_service_restart("gostream", timeout=10)
                     gostorm_fail_count = 0
                     last_restart["gostorm"] = time.time()
                 except Exception as re:
@@ -1767,21 +1786,12 @@ async def api_restart(service: str) -> JSONResponse:
         if service == "plex":
             from urllib.parse import urlparse as _urlparse
             _plex_host = _urlparse(PLEX_URL).hostname or "127.0.0.1"
-            result = subprocess.run(
-                ["ssh", f"pi@{_plex_host}", "sudo", "systemctl", "restart", services[service]],
-                capture_output=True, text=True, timeout=30
-            )
+            result = _run_remote_plex_restart(_plex_host, services[service], timeout=30)
         elif service == "fuse":
             # Use improved watchdog script for clean FUSE restart (unmounts correctly)
-            result = subprocess.run(
-                ["sudo", "/home/pi/scripts/fuse-watchdog-improved.sh", "restart"],
-                capture_output=True, text=True, timeout=120
-            )
+            result = _run_service_restart(services[service], timeout=120)
         else:
-            result = subprocess.run(
-                ["sudo", "systemctl", "restart", services[service]],
-                capture_output=True, text=True, timeout=30
-            )
+            result = _run_service_restart(services[service], timeout=30)
 
         if result.returncode == 0:
             last_restart[service] = now

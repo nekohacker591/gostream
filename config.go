@@ -387,7 +387,7 @@ func (c *Config) LogConfig(logger *log.Logger) {
 // GetStateDir returns the centralized state directory path
 func GetStateDir() string {
 	if globalConfig.RootPath == "" {
-		return "/home/pi/STATE" // Default fallback
+		return defaultStateDir() // Default fallback
 	}
 	return filepath.Join(globalConfig.RootPath, "STATE")
 }

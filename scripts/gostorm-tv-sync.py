@@ -102,8 +102,8 @@ class GoStormTV:
         self.TORRSERVER_URL = os.getenv("TORRSERVER_URL", _cfg.get('gostorm_url', 'http://127.0.0.1:8090'))
         _mount = _cfg.get('physical_source_path', '/mnt/torrserver')
         self.TV_DIR = os.getenv("TV_DIR", os.path.join(_mount, "tv"))
-        self.STATE_DIR = os.getenv("STATE_DIR", _cfg.get('_state_dir', '/home/pi/STATE'))
-        self.LOG_FILE = os.getenv("LOG_FILE", os.path.join(_cfg.get('_log_dir', '/home/pi/logs'), 'gostorm-tv-sync.log'))
+        self.STATE_DIR = os.getenv("STATE_DIR", _cfg.get('_state_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'STATE')))
+        self.LOG_FILE = os.getenv("LOG_FILE", os.path.join(_cfg.get('_log_dir', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')), 'gostorm-tv-sync.log'))
 
         # API Keys
         self.TMDB_API_KEY = _cfg.get('tmdb_api_key', '')
