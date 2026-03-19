@@ -1,11 +1,13 @@
 <p align="center">
   <h1 align="center">🎬 GoStream</h1>
   <p align="center">
-    <strong>The most advanced BitTorrent engine and FUSE virtual filesystem for live streaming to your private Plex/Jellyfin library. Forget Real-Debrid.</strong>
+    <strong>The most advanced BitTorrent engine and virtual filesystem for live streaming to your private Plex/Jellyfin library. Linux-first, now with Windows porting guidance and PowerShell automation. Forget Real-Debrid.</strong>
   </p>
 </p>
 
 ---
+
+> **Windows port status:** this repository now includes Windows-oriented installation and automation assets (`install.ps1`, `docker/docker-entrypoint.ps1`, `ai/setup_windows.ps1`, and `scripts/windows/*.ps1`) plus cross-platform Python/Go file-locking changes. The core filesystem layer is still implemented on top of `go-fuse`, so a production-grade Windows filesystem backend still requires a WinFsp-compatible port of the mount layer before the binary can fully replace the Linux runtime.
 
 GoStream exposes a **custom FUSE virtual filesystem** where every `.mkv` file is a perfect illusion: it looks like a real file on disk, but every byte is served live from a BitTorrent swarm on demand. No downloading. No temp files. No storage quota.
 
@@ -340,10 +342,12 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 
 ## Requirements
 
-| Component | Details |
-|-----------|---------|
+### Linux production baseline
+
+| Component | Notes |
+|-----------|-------|
 | **Hardware** | Raspberry Pi 4 with arm64 OS (4 GB RAM recommended) |
-| **Go** | 1.24+ — must be `linux/arm64` toolchain, **not** `linux/arm` (32-bit) |
+| **Go** | 1.24+ Linux toolchain |
 | **Python** | 3.9+ with pip3 |
 | **FUSE 3** | `sudo apt install fuse3 libfuse3-dev` |
 | **systemd** | For service management |
@@ -352,9 +356,23 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 | **TMDB API key** | Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
 | **Plex token** | Settings → Account → XML API |
 
+### Windows port prerequisites
+
+| Component | Notes |
+|-----------|-------|
+| **Windows 11 / Server 2022** | Recommended target for the port |
+| **PowerShell 7+** | Used by all new Windows automation scripts |
+| **Python 3.11+** | Required for sync scripts and dashboard |
+| **Go 1.24+** | Required to rebuild Go binaries |
+| **Git** | Source checkout |
+| **WinFsp** | Required before replacing the Linux FUSE backend with a Windows filesystem driver |
+| **Optional NSSM / SCM** | For running `gostream` and `health-monitor` as Windows services |
+
 ---
 
 ## Quick Install
+
+### Linux
 
 ```bash
 git clone https://github.com/MrRobotoGit/gostream gostream
@@ -363,9 +381,26 @@ chmod +x install.sh
 ./install.sh
 ```
 
-![GoStream interactive installer](docs/screenshots/install.png)
+### Windows
 
-The interactive installer handles everything end-to-end:
+```powershell
+git clone https://github.com/MrRobotoGit/gostream.git
+cd gostream
+./install.ps1
+```
+
+Windows checklist:
+
+1. Run `install.ps1` in an elevated PowerShell session.
+2. Install **WinFsp** if the script warns it is missing.
+3. Confirm `config.json` uses Windows-style paths, for example: 
+   - `physical_source_path`: `C:\GoStream\library`
+   - `fuse_mount_path`: `C:\GoStream\mount`
+4. Install Python dependencies if needed: `python -m pip install -r requirements.txt`.
+5. Use the new PowerShell launchers in `scripts/windows/` for the monitor and sync jobs.
+6. Finish the filesystem backend migration to WinFsp before expecting the main Go mount to run natively on Windows.
+
+Linux installer scope (unchanged):
 1. Installs system dependencies (`fuse3`, `libfuse3-dev`, `gcc`, `samba`, `git`, `pip3`)
 2. Prompts for all required paths, Plex credentials, TMDB key, and NAT-PMP settings
 3. Generates `config.json` from `config.json.example`
@@ -374,12 +409,6 @@ The interactive installer handles everything end-to-end:
 6. **Compiles the GoStream binary** (downloads Go if needed, detects architecture automatically)
 7. Writes and enables systemd services for `gostream` and `health-monitor`
 8. Optionally configures system cron jobs (skip if using the built-in Scheduler)
-
-Once complete:
-
-```bash
-sudo systemctl start gostream health-monitor
-```
 
 ---
 
@@ -739,6 +768,47 @@ Environment="GOGC=100"
 `GOMEMLIMIT=2200MiB` leaves headroom for OS, Samba, and Python scripts on a 4 GB Pi 4.
 
 ---
+
+## Windows Port Notes
+
+The repository previously assumed a Linux environment in four major areas:
+
+1. **Shell automation** used Bash and `.sh` entrypoints.
+2. **Service control** assumed `systemctl`, `sudo`, and systemd units.
+3. **Single-instance locking** assumed `fcntl.flock` and Go `syscall.Flock`.
+4. **Filesystem mounting** assumed a Linux FUSE runtime through `go-fuse`.
+
+This porting pass addresses the first three directly:
+
+- PowerShell replacements were added for installer, Docker entrypoint, AI setup, and sync-launch helpers.
+- Python scripts now use a cross-platform lock helper so they can run on Windows without `fcntl`.
+- Go registry writes now use an OS-specific locking shim so Windows can coordinate safely with Python helpers.
+- The health monitor restart path now supports Windows service restarts through PowerShell `Restart-Service`.
+
+### Recommended Windows layout
+
+```text
+C:\GoStream\
+  config.json
+  STATE\
+  logs\
+  library\movies\
+  library\tv\
+  mount\
+```
+
+### Running the Python sidecars on Windows
+
+```powershell
+./scripts/windows/run-health-monitor.ps1
+./scripts/windows/run-movie-sync.ps1
+./scripts/windows/run-tv-sync.ps1
+./scripts/windows/run-watchlist-sync.ps1
+```
+
+### Remaining engineering work
+
+To complete the Windows port of the main executable, the `go-fuse` mount implementation in `main.go` still needs to be replaced or abstracted behind a Windows-compatible filesystem backend such as **WinFsp**. The changes in this patch prepare the surrounding automation, config, locking, and service assumptions for that transition.
 
 ## Sync Scripts
 

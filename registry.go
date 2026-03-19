@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -135,7 +134,7 @@ func RemoveFromRegistry(filePath string) {
 	}
 }
 
-// saveRegistryLocked saves the registry using syscall.Flock to coordinate with Python scripts
+// saveRegistryLocked saves the registry using a cross-platform file lock to coordinate with Python scripts
 func saveRegistryLocked(path string, registry map[string]EpisodeEntry) error {
 	// 1. Open file
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
@@ -144,11 +143,12 @@ func saveRegistryLocked(path string, registry map[string]EpisodeEntry) error {
 	}
 	defer f.Close()
 
-	// 2. Lock file (Exclusive, blocking) - Matches Python's fcntl.flock(f, fcntl.LOCK_EX)
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	// 2. Lock file (exclusive, blocking)
+	unlock, err := lockFileExclusive(f)
+	if err != nil {
 		return fmt.Errorf("could not acquire lock: %v", err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer unlock()
 
 	// 3. Encode JSON
 	data, err := json.MarshalIndent(registry, "", "  ")

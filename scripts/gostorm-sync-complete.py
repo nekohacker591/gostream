@@ -15,9 +15,11 @@ import time
 import requests
 import urllib3
 from prowlarr_client import ProwlarrClient
+from platform_lock import FileLock, FileLockError
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import subprocess
+import tempfile
 
 
 def _load_gostream_config() -> dict:
@@ -5334,25 +5336,17 @@ class GoStormSync:
         If another instance holds the lock, exits gracefully.
         Handles stale locks from crashed processes automatically.
         """
-        import fcntl
         import os
         import sys
         import atexit
 
-        lock_file = "/tmp/gostorm-sync.lock"
-        pid_file = "/tmp/gostorm-sync.pid"
+        lock_file = os.path.join(tempfile.gettempdir(), "gostorm-sync.lock")
+        pid_file = os.path.join(tempfile.gettempdir(), "gostorm-sync.pid")
 
-        # Open lock file (create if not exists)
         try:
-            self._lock_fd = open(lock_file, 'w')
-        except IOError as e:
-            self.log("ERROR", f"Cannot create lock file: {e}")
-            sys.exit(1)
-
-        # Try to acquire EXCLUSIVE lock (non-blocking)
-        try:
-            fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
+            self._instance_lock = FileLock(lock_file, pid_file)
+            self._instance_lock.acquire(blocking=False)
+        except FileLockError:
             # Lock held by another process - check if it's alive (handle stale locks)
             try:
                 with open(pid_file, 'r') as f:
@@ -5363,21 +5357,14 @@ class GoStormSync:
 
                 # Process is alive - exit gracefully
                 self.log("ERROR", f"Another instance already running (PID {old_pid}). Exiting.")
-                self._lock_fd.close()
                 sys.exit(1)
 
             except (ProcessLookupError, ValueError, FileNotFoundError, PermissionError):
                 # Stale lock - old process crashed without cleanup
                 self.log("WARN", "Stale lock detected (previous instance crashed), forcing acquisition...")
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX)  # Blocking acquire
+                self._instance_lock = FileLock(lock_file, pid_file)
+                self._instance_lock.acquire(blocking=True)
                 self.log("INFO", "Lock acquired after stale cleanup")
-
-        # Lock acquired successfully - write our PID
-        try:
-            with open(pid_file, 'w') as f:
-                f.write(str(os.getpid()))
-        except IOError:
-            pass  # Non-critical if PID file fails
 
         self.log("INFO", f"Lock acquired, running as PID {os.getpid()}")
 
@@ -5389,17 +5376,15 @@ class GoStormSync:
         Release lock file on exit (called automatically via atexit).
         Also called by signal handlers for clean shutdown.
         """
-        import fcntl
         import os
 
-        lock_file = "/tmp/gostorm-sync.lock"
-        pid_file = "/tmp/gostorm-sync.pid"
+        lock_file = os.path.join(tempfile.gettempdir(), "gostorm-sync.lock")
+        pid_file = os.path.join(tempfile.gettempdir(), "gostorm-sync.pid")
 
         try:
-            if hasattr(self, '_lock_fd') and self._lock_fd:
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_UN)
-                self._lock_fd.close()
-                self._lock_fd = None
+            if hasattr(self, '_instance_lock') and self._instance_lock:
+                self._instance_lock.release()
+                self._instance_lock = None
         except:
             pass
 

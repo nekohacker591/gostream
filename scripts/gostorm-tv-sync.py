@@ -27,6 +27,7 @@ import sys
 import time
 import requests
 import urllib3
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set, NamedTuple, Any
@@ -83,6 +84,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
 from urllib.parse import quote
 from prowlarr_client import ProwlarrClient
+from platform_lock import FileLock, FileLockError
 
 
 class EpisodeInfo(NamedTuple):
@@ -238,43 +240,33 @@ class GoStormTV:
         return t.strip()
 
     def _save_registry(self):
-        """Save episode registry atomically with file lock to prevent corruption"""
-        import fcntl
+        """Save episode registry atomically with file lock to prevent corruption."""
         lock_file = self.REGISTRY_FILE + '.lock'
-        # Use PID in temp filename to avoid race conditions between processes
         tmp = f"{self.REGISTRY_FILE}.{os.getpid()}.tmp"
 
         try:
-            # Ensure STATE_DIR exists
             os.makedirs(os.path.dirname(self.REGISTRY_FILE), exist_ok=True)
-
-            # Acquire lock FIRST to prevent concurrent writes
-            with open(lock_file, 'w') as lf:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-                try:
-                    # Write to temp file while holding lock
-                    with open(tmp, 'w') as f:
-                        json.dump(self._registry, f, indent=2)
-                        f.flush()
-                        os.fsync(f.fileno())
-
-                    # Atomic replace
-                    os.replace(tmp, self.REGISTRY_FILE)
-                finally:
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-                    # Cleanup temp file if it still exists
-                    if os.path.exists(tmp):
-                        try:
-                            os.remove(tmp)
-                        except:
-                            pass
-
-        except (IOError, OSError) as e:
+            registry_lock = FileLock(lock_file)
+            registry_lock.acquire(blocking=True)
+            try:
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    json.dump(self._registry, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.REGISTRY_FILE)
+            finally:
+                registry_lock.release()
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+        except (IOError, OSError, FileLockError) as e:
             self.log("ERROR", f"Failed to save registry: {e}")
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
-                except:
+                except OSError:
                     pass
 
     def _episode_key(self, show: str, season: int, episode: int) -> str:
@@ -1517,58 +1509,40 @@ class GoStormTV:
         Ensure single instance using atomic file locking (fcntl.flock).
         This is the standard Unix approach - no race conditions possible.
         """
-        import fcntl
         import atexit
 
-        lock_file = "/tmp/gostorm-tv-sync.lock"
-        pid_file = "/tmp/gostorm-tv-sync.pid"
+        lock_file = os.path.join(tempfile.gettempdir(), "gostorm-tv-sync.lock")
+        pid_file = os.path.join(tempfile.gettempdir(), "gostorm-tv-sync.pid")
 
-        # Open lock file (create if not exists)
         try:
-            self._lock_fd = open(lock_file, 'w')
-        except IOError as e:
-            self.log("ERROR", f"Cannot create lock file: {e}")
-            sys.exit(1)
-
-        # Try to acquire EXCLUSIVE lock (non-blocking)
-        try:
-            fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
+            self._instance_lock = FileLock(lock_file, pid_file)
+            self._instance_lock.acquire(blocking=False)
+        except FileLockError:
             # Lock held by another process - check if it's alive
             try:
                 with open(pid_file, 'r') as f:
                     old_pid = int(f.read().strip())
                 os.kill(old_pid, 0)  # Check if process exists
                 self.log("ERROR", f"Another instance already running (PID {old_pid}). Exiting.")
-                self._lock_fd.close()
                 sys.exit(1)
             except (ProcessLookupError, ValueError, FileNotFoundError, PermissionError):
                 # Stale lock - old process crashed
                 self.log("WARN", "Stale lock detected, forcing acquisition...")
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_EX)
-
-        # Write our PID
-        try:
-            with open(pid_file, 'w') as f:
-                f.write(str(os.getpid()))
-        except IOError:
-            pass
+                self._instance_lock = FileLock(lock_file, pid_file)
+                self._instance_lock.acquire(blocking=True)
 
         self.log("INFO", f"Lock acquired, running as PID {os.getpid()}")
         atexit.register(self._release_lock)
 
     def _release_lock(self):
         """Release lock file on exit."""
-        import fcntl
-
-        lock_file = "/tmp/gostorm-tv-sync.lock"
-        pid_file = "/tmp/gostorm-tv-sync.pid"
+        lock_file = os.path.join(tempfile.gettempdir(), "gostorm-tv-sync.lock")
+        pid_file = os.path.join(tempfile.gettempdir(), "gostorm-tv-sync.pid")
 
         try:
-            if hasattr(self, '_lock_fd') and self._lock_fd:
-                fcntl.flock(self._lock_fd.fileno(), fcntl.LOCK_UN)
-                self._lock_fd.close()
-                self._lock_fd = None
+            if hasattr(self, '_instance_lock') and self._instance_lock:
+                self._instance_lock.release()
+                self._instance_lock = None
         except:
             pass
 

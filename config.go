@@ -384,10 +384,21 @@ func (c *Config) LogConfig(logger *log.Logger) {
 	logger.Printf("=====================")
 }
 
+func defaultRootPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+			return cwd
+		}
+		return "."
+	}
+	return filepath.Join(home, "GoStream")
+}
+
 // GetStateDir returns the centralized state directory path
 func GetStateDir() string {
 	if globalConfig.RootPath == "" {
-		return "/home/pi/STATE" // Default fallback
+		return filepath.Join(defaultRootPath(), "STATE")
 	}
 	return filepath.Join(globalConfig.RootPath, "STATE")
 }
