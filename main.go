@@ -1,30 +1,29 @@
 package main
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/cespare/xxhash/v2"
 	"gostream/ai"
 	server "gostream/internal/gostorm"
 	"gostream/internal/gostorm/settings"
 	torrstor "gostream/internal/gostorm/torr/storage/torrstor"
 	tsutils "gostream/internal/gostorm/utils"
 	"gostream/internal/gostorm/web"
-	"github.com/cespare/xxhash/v2"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1894,7 +1893,7 @@ DATA_READY:
 							return // Already cached
 						}
 
-										// BUG-3: prefetch outlives the FUSE call â use independent context
+						// BUG-3: prefetch outlives the FUSE call â use independent context
 						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer cancel()
 						if err := globalRateLimiter.Acquire(ctx); err != nil {
@@ -3010,8 +3009,8 @@ func main() {
 			globalConfig.RootPath = filepath.Dir(dbPath)
 		}
 	} else {
-		// Default to /home/pi if no flag provided (for backward compat)
-		globalConfig.RootPath = "/home/pi"
+		// Default to the platform-specific install root if no flag provided
+		globalConfig.RootPath = defaultRootPath()
 	}
 
 	// CLI args take precedence; fall back to config.json values if omitted
@@ -3333,7 +3332,11 @@ func main() {
 	// V133: Setup signal handler for graceful shutdown
 	// This ensures inode map is saved before exit
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	if runtime.GOOS == "windows" {
+		signal.Notify(sigChan, os.Interrupt)
+	} else {
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	}
 	var server *fuse.Server // Declare here to be accessible in goroutine
 	var err error           // Declare err here too
 	go func() {
@@ -3428,10 +3431,11 @@ func main() {
 // When smbd enters D-state, the Synology CIFS mount becomes unresponsive and can't
 // be remounted until gostream restarts (only way to unblock kernel FUSE operations).
 // Strategy: Level 1 (3 hits, 180s) - Emergency Unblock (Interrupt all pumps).
-//           Level 2 (10 hits, 600s) - Graceful Restart (Last resort).
+//
+//	Level 2 (10 hits, 600s) - Graceful Restart (Last resort).
 func smbdWatchdog() {
 	const checkInterval = 60 * time.Second
-	const unblockThreshold = 3 // 180s - Emergency unblock (interrupt all pumps)
+	const unblockThreshold = 3  // 180s - Emergency unblock (interrupt all pumps)
 	const restartThreshold = 10 // 600s - Full restart (persistent stall)
 	consecutiveHits := 0
 
@@ -3441,11 +3445,11 @@ func smbdWatchdog() {
 	for range ticker.C {
 		if countDStateSmbd() > 0 {
 			consecutiveHits++
-			logger.Printf("[Watchdog] D-state smbd detected (%d/%d)", consecutiveHits, restartThreshold)
+			logger.Printf("[Watchdog] Blocked Samba process detected (%d/%d)", consecutiveHits, restartThreshold)
 
 			// FASE 1: Sblocco di emergenza (3 minuti)
 			if consecutiveHits == unblockThreshold {
-				logger.Printf("[Watchdog] D-state persistent for %ds — triggering EMERGENCY UNBLOCK",
+				logger.Printf("[Watchdog] Blocked Samba state persistent for %ds — triggering EMERGENCY UNBLOCK",
 					consecutiveHits*int(checkInterval/time.Second))
 
 				// Interrompiamo tutti i reader attivi per sbloccare le Read() appese.
@@ -3466,36 +3470,24 @@ func smbdWatchdog() {
 
 			// FASE 2: Riavvio completo (10 minuti)
 			if consecutiveHits >= restartThreshold {
-				logger.Printf("[Watchdog] D-state STILL persistent for %ds — triggering graceful restart",
+				logger.Printf("[Watchdog] Blocked Samba state STILL persistent for %ds — triggering graceful restart",
 					consecutiveHits*int(checkInterval/time.Second))
 				syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 				return
 			}
 		} else {
 			if consecutiveHits > 0 {
-				logger.Printf("[Watchdog] D-state cleared after %d hit(s) (Max: %d)", consecutiveHits, restartThreshold)
+				logger.Printf("[Watchdog] Blocked Samba state cleared after %d hit(s) (Max: %d)", consecutiveHits, restartThreshold)
 			}
 			consecutiveHits = 0
 		}
 	}
 }
 
-// countDStateSmbd returns the number of smbd processes in D-state (uninterruptible sleep).
+// countDStateSmbd returns the number of Samba processes stuck in a blocked state.
+// On Windows there is no smbd/D-state equivalent, so the watchdog is disabled.
 func countDStateSmbd() int {
-	// ps -eo stat,comm: STAT column starts with D for uninterruptible sleep
-	out, err := exec.Command("ps", "-eo", "stat,comm").Output()
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, line := range bytes.Split(out, []byte("\n")) {
-		// Match lines where STAT starts with D and command is smbd
-		fields := bytes.Fields(line)
-		if len(fields) >= 2 && fields[0][0] == 'D' && string(fields[1]) == "smbd" {
-			count++
-		}
-	}
-	return count
+	return countBlockedSambaProcesses()
 }
 
 // V239: Start Orphan Handle Garbage Collector

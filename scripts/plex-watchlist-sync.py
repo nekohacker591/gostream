@@ -38,8 +38,8 @@ def _load_gostream_config() -> dict:
     except Exception:
         cfg = {}
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    cfg['_state_dir'] = os.environ.get('GOSTREAM_STATE_DIR', os.path.join(config_dir, 'STATE'))
-    cfg['_log_dir'] = os.environ.get('GOSTREAM_LOG_DIR', os.path.join(config_dir, 'logs'))
+    cfg['_state_dir'] = default_state_dir(config_dir)
+    cfg['_log_dir'] = default_logs_dir(config_dir)
     plex_cfg = cfg.setdefault('plex', {})
     plex_cfg['url'] = os.environ.get('GOSTREAM_PLEX_URL') or os.environ.get('PLEX_URL') or plex_cfg.get('url', '')
     plex_cfg['token'] = os.environ.get('GOSTREAM_PLEX_TOKEN') or os.environ.get('PLEX_TOKEN') or plex_cfg.get('token', '')
@@ -67,7 +67,7 @@ PLEX_URL = _normalize_plex_url(PLEX_URL)
 if PLEX_INSECURE_TLS:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TORRSERVER   = _cfg.get('gostorm_url', 'http://127.0.0.1:8090')
-MOVIES_DIR   = os.path.join(_cfg.get('physical_source_path', '/mnt/torrserver'), 'movies')
+MOVIES_DIR   = os.path.join(_cfg.get('physical_source_path', default_library_dir()), 'movies')
 TMDB_API_KEY = _cfg.get('tmdb_api_key', '')
 SECTION_ID   = _cfg.get('plex', {}).get('library_id', 0)
 

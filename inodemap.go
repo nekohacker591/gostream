@@ -32,7 +32,7 @@ const (
 	InodeSaveInterval = 60 * time.Second
 
 	// Default save path (unified with main.go)
-	DefaultInodeMapPath = "/home/pi/STATE/inode_map.json"
+	DefaultInodeMapPath = "STATE/inode_map.json"
 )
 
 // InodeMap manages persistent content -> inode mapping

@@ -47,6 +47,7 @@ This is not a torrent client with a media server bolted on. The FUSE filesystem 
 - [Core Engineering](#core-engineering)
 - [Performance](#performance)
 - [Requirements](#requirements)
+- [Windows Port](#windows-port)
 - [Quick Install](#quick-install)
 - [How-To Guide](#how-to-guide)
 - [Control Panel](#gostream-control-panel)
@@ -340,17 +341,67 @@ GoStorm is a fork of **[TorrServer Matrix 1.37](https://github.com/YouROK/TorrSe
 
 ## Requirements
 
-| Component | Details |
-|-----------|---------|
-| **Hardware** | Raspberry Pi 4 with arm64 OS (4 GB RAM recommended) |
-| **Go** | 1.24+ — must be `linux/arm64` toolchain, **not** `linux/arm` (32-bit) |
-| **Python** | 3.9+ with pip3 |
-| **FUSE 3** | `sudo apt install fuse3 libfuse3-dev` |
-| **systemd** | For service management |
-| **Samba** | `sudo apt install samba` |
-| **Plex/Jellyfin** | Media Server (on Synology or any network host) |
-| **TMDB API key** | Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
-| **Plex token** | Settings → Account → XML API |
+| Component | Linux / Raspberry Pi | Windows Port |
+|-----------|----------------------|--------------|
+| **Go** | 1.24+ `linux/arm64` | 1.24+ `windows/amd64` or `windows/arm64` |
+| **Python** | 3.9+ with pip3 | 3.9+ with pip |
+| **Filesystem driver** | FUSE 3 (`fuse3`, `libfuse3-dev`) | **WinFsp** (required to expose the virtual drive on Windows) |
+| **Service manager** | `systemd` | Windows Service Control Manager (`sc.exe` / `Restart-Service`) |
+| **Network share** | Samba | SMB file sharing built into Windows |
+| **Media server** | Plex/Jellyfin on any reachable host | Plex/Jellyfin on the same PC or any reachable host |
+| **TMDB API key** | Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) | Same |
+| **Plex token** | Settings → Account → XML API | Same |
+
+---
+
+## Windows Port
+
+The repository now includes a first-class **Windows-oriented layout**:
+
+- `install.ps1` bootstraps the Windows install directory, writes `config.json`, installs Python requirements, builds `gostream.exe`, and registers Windows services.
+- `scripts/Start-HealthMonitor.ps1` starts the dashboard using the same `config.json` as the Go binary.
+- `ai/setup_windows.ps1` replaces the Raspberry Pi shell setup flow for the AI sidecar.
+- Python sync/health scripts now use **cross-platform file locking**, **Windows default paths**, and **PowerShell-based service restarts** when running on Windows.
+- Go defaults now resolve to Windows-friendly paths such as `C:\GoStream\library`, `G:\`, and `%ProgramData%\GoStream` when the binary runs on Windows.
+
+### Recommended Windows directory layout
+
+```text
+C:\GoStream\library\movies
+C:\GoStream\library\tv
+C:\ProgramData\GoStream\config.json
+C:\ProgramData\GoStream\STATE
+C:\ProgramData\GoStream\logs
+G:\                        <- WinFsp virtual drive exposed by GoStream
+```
+
+### Windows install steps
+
+1. Install **Git for Windows**, **Python 3.9+**, **Go 1.24+**, and **WinFsp**.
+2. Open **PowerShell as Administrator**.
+3. Clone the repo and run the Windows installer:
+
+```powershell
+git clone https://github.com/MrRobotoGit/gostream gostream
+cd gostream
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+```
+
+4. Edit `%ProgramData%\GoStream\config.json` and fill in Plex, TMDB, and optional Prowlarr settings.
+5. Start or restart the Windows services:
+
+```powershell
+Start-Service GoStream
+Start-Service GoStreamHealthMonitor
+```
+
+### Windows operational notes
+
+- The Linux-specific Docker image, `systemd` units, and `iptables`-based NAT-PMP redirect flow remain Linux-only. For Windows, use the native install path plus Windows Firewall / router rules instead.
+- The health monitor now restarts local services with `Restart-Service` on Windows instead of `systemctl`.
+- Lock files used by the movie/TV sync jobs now work on both Unix (`fcntl`) and Windows (`msvcrt`).
+- The Samba D-state watchdog is automatically disabled on Windows because the Linux `smbd` process state check does not exist there.
 
 ---
 

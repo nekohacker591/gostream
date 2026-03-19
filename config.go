@@ -35,7 +35,7 @@ type SchedulerConfig struct {
 type Config struct {
 	// --- Internal / Derived Fields ---
 	ConfigPath string `json:"-"`
-	RootPath   string `json:"-"` // V138: Root path for state/config (default: /home/pi)
+	RootPath   string `json:"-"` // V138: Root path for state/config (platform default)
 
 	// --- Core Tuning (JSON Mapped) ---
 	MasterConcurrencyLimit int    `json:"master_concurrency_limit"` // Global limit for concurrent HTTP requests to GoStorm
@@ -139,6 +139,9 @@ type Config struct {
 func LoadConfig() Config {
 	// 1. Initial Defaults (V138 Gold Standard)
 	cfg := Config{
+		RootPath:               defaultRootPath(),
+		PhysicalSourcePath:     defaultPhysicalSourcePath(),
+		FuseMountPath:          defaultVirtualMountPath(),
 		MasterConcurrencyLimit: 25,
 		ReadAheadBudgetMB:      512,
 		MetadataCacheSizeMB:    50, // Default 50MB for metadata
